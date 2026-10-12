@@ -173,6 +173,17 @@ static D3D11_INPUT_ELEMENT_DESC g_VertexInputWireframeDesc[] =
     {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
 };
 
+struct EdgeStruct
+{
+    int v1;
+    int v2;
+    int v1Prox;
+    int v2Prox;
+};
+
+// For the wireframe debug view.
+EdgeStruct *g_EdgeList;
+int g_EdgeListCount = 0;
 
 // All pipelines share the same constant buffer, for simplicity.
 char const* g_ConstantBufferSource;
@@ -209,6 +220,11 @@ bool g_FloodFillTeleportEdgefill_Current = false;
 int g_WireframeMode = 0;
 float g_WireframeNormalScale = 0.15f;
 float g_WireframeTangentScale = 0.02f;
+int g_WireframeDebugTriangle[2] = {-1, -1};
+bool g_WireframeShowUniqueMapping = false;
+float g_WireframeScale = 0.5f;
+float g_WireframeXOffset = 0.75f;
+float g_WireframeYOffset = 0.5f;
 
 int g_SurfaceFromObjectTextureSize = 256;
 int g_SurfaceFromObjectTextureSizePow2 = 8;
@@ -297,8 +313,8 @@ const char* DistortionModeNames[] = {
 const char* WireframeModeNames[] = {
     "Off",
     "Rendered mesh",
-    "Rendered mesh and surface space",
-    "Base mesh",
+    "Rendered mesh and tangents",
+    "Base mesh"
 };
 
 
@@ -376,7 +392,7 @@ int main(int, char**)
     // Create application window
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"Skinned Heightfield", nullptr };
     ::RegisterClassExW(&wc);
-    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Skinned Heightfield", WS_OVERLAPPEDWINDOW, 100, 100, (int)(1280 * main_scale), (int)(800 * main_scale), nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Skinned Heightfield", WS_OVERLAPPEDWINDOW, 100, 100, (int)(1280 * main_scale), (int)(720 * main_scale), nullptr, nullptr, wc.hInstance, nullptr);
 
     // Initialize Direct3D
     if (!CreateDeviceD3D(hwnd))
@@ -865,9 +881,17 @@ int main(int, char**)
                 ImGui::SliderInt("Distortion mode", &g_ConstantBufferData.DistortionMode, 0, ARRAYSIZE(DistortionModeNames) - 1, DistortionModeNames[g_ConstantBufferData.DistortionMode]);
                 // Different alpha modes don't do much yet.
                 //ImGui::SliderInt("Tranparency mode", &g_AlphaMode, 0, ARRAYSIZE(AlphaModeNames) - 1, AlphaModeNames[g_AlphaMode]);
-                ImGui::SliderInt("Wireframe mode", &g_WireframeMode, 0, ARRAYSIZE(WireframeModeNames) - 1, WireframeModeNames[g_WireframeMode]);
-                ImGui::SliderFloat("Wireframe normals", &g_WireframeNormalScale, 0.0f, 1.0f);
-                ImGui::SliderFloat("Wireframe tangents", &g_WireframeTangentScale, 0.0f, 1.0f);
+
+                ImGui::SeparatorText("WIREFRAME:");
+                ImGui::SliderInt("Mode", &g_WireframeMode, 0, ARRAYSIZE(WireframeModeNames) - 1, WireframeModeNames[g_WireframeMode]);
+                ImGui::SliderFloat("Normals", &g_WireframeNormalScale, 0.0f, 1.0f);
+                ImGui::SliderFloat("Tangents", &g_WireframeTangentScale, 0.0f, 1.0f);
+                ImGui::SliderInt("Cyan triangle", &g_WireframeDebugTriangle[0], -1, g_NumTris-1);
+                ImGui::SliderInt("Yellow triangle", &g_WireframeDebugTriangle[1], -1, g_NumTris-1);
+                ImGui::Checkbox("Show unique mapping", &g_WireframeShowUniqueMapping);
+                ImGui::SliderFloat("Unique mapping scale", &g_WireframeScale, 0.1f, 2.0f);
+                ImGui::SliderFloat("Unique mapping X", &g_WireframeXOffset, -2.0f, 2.0f);
+                ImGui::SliderFloat("Unique mapping Y", &g_WireframeYOffset, -2.0f, 2.0f);
 
                 ImGui::SeparatorText("ANIMATION:");
                 ImGui::Checkbox("Anim paused", &g_boneAnimPaused);
@@ -1174,10 +1198,13 @@ int main(int, char**)
                 g_VertexDataTemp[vertNum] = vertex;
             }
 
-            Vec4 const colourSolid ( 1.0f, 1.0f, 1.0f, 1.0f );
-            Vec4 const colourRed   ( 1.0f, 0.0f, 0.0f, 1.0f );
-            Vec4 const colourGreen ( 0.0f, 1.0f, 0.0f, 1.0f );
-            Vec4 const colourBlue  ( 0.0f, 0.0f, 1.0f, 1.0f );
+            Vec4 const colourSolid  ( 1.0f, 1.0f, 1.0f, 1.0f );
+            Vec4 const colourRed    ( 1.0f, 0.0f, 0.0f, 1.0f );
+            Vec4 const colourGreen  ( 0.0f, 1.0f, 0.0f, 1.0f );
+            Vec4 const colourBlue   ( 0.0f, 0.0f, 1.0f, 1.0f );
+            Vec4 const colourEdge   ( 1.0f, 0.0f, 1.0f, 1.0f );
+            Vec4 const colourCyan   ( 0.0f, 1.0f, 1.0f, 1.0f );
+            Vec4 const colourYellow ( 1.0f, 1.0f, 0.0f, 1.0f );
 
             UINT *curIndex = g_IndexData;
             for ( int triNum = 0; triNum < g_NumTris; triNum++ )
@@ -1198,6 +1225,18 @@ int main(int, char**)
                 g_WireframeVerts[numLineVerts++] = { v0->Pos, colourSolid };
             }
 
+            for ( int edgeNum = 0; edgeNum < g_EdgeListCount; edgeNum++ )
+            {
+                int index0 = g_EdgeList[edgeNum].v1;
+                int index1 = g_EdgeList[edgeNum].v2;
+
+                VertexBufferStruct *v0 = g_VertexDataTemp + index0;
+                VertexBufferStruct *v1 = g_VertexDataTemp + index1;
+
+                g_WireframeVerts[numLineVerts++] = { v0->Pos, colourEdge };
+                g_WireframeVerts[numLineVerts++] = { v1->Pos, colourEdge };
+            }
+
             if ( g_WireframeMode == 2 )
             {
                 // Also draw tangent space.
@@ -1210,6 +1249,57 @@ int main(int, char**)
                     g_WireframeVerts[numLineVerts++] = { vertex.Pos + vertex.Bitangent * g_WireframeTangentScale, colourGreen };
                     g_WireframeVerts[numLineVerts++] = { vertex.Pos,                                              colourBlue };
                     g_WireframeVerts[numLineVerts++] = { vertex.Pos + vertex.Normal    * g_WireframeNormalScale,  colourBlue };
+                }
+            }
+
+            for ( int triNum = 0; triNum < 2; triNum++ )
+            {
+                if ( g_WireframeDebugTriangle[triNum] >= 0 )
+                {
+                    if ( g_WireframeDebugTriangle[triNum] >= g_NumTris )
+                    {
+                        g_WireframeDebugTriangle[triNum] = g_NumTris - 1;
+                    }
+
+                    Vec4 triColour = colourCyan;
+                    if ( triNum == 1 )
+                    {
+                        triColour = colourYellow;
+                    }
+
+                    int curTriNum = g_WireframeDebugTriangle[triNum];
+
+                    curIndex = g_IndexData + curTriNum * 3;
+
+                    int index0 = *curIndex++;
+                    int index1 = *curIndex++;
+                    int index2 = *curIndex++;
+
+                    VertexBufferStruct *v0 = g_VertexDataTemp + index0;
+                    VertexBufferStruct *v1 = g_VertexDataTemp + index1;
+                    VertexBufferStruct *v2 = g_VertexDataTemp + index2;
+
+                    static float animAmount = 0.0f;
+                    animAmount += secondsSinceLastFrame * 0.5f;
+                    animAmount -= floorf ( animAmount );
+                    float animBlend = animAmount * 2.0f;
+                    if ( animBlend > 1.0f )
+                    {
+                        animBlend = 2.0f - animBlend;
+                    }
+                    Vec3 center = ( v0->Pos + v1->Pos + v2->Pos ) * ( 1.0f / 3.0f );
+                    float lerp = 1.0f - 0.2f * animBlend;
+
+                    Vec3 pos0 = v0->Pos * lerp + center * ( 1.0f - lerp );
+                    Vec3 pos1 = v1->Pos * lerp + center * ( 1.0f - lerp );
+                    Vec3 pos2 = v2->Pos * lerp + center * ( 1.0f - lerp );
+
+                    g_WireframeVerts[numLineVerts++] = { pos0, triColour };
+                    g_WireframeVerts[numLineVerts++] = { pos1, triColour };
+                    g_WireframeVerts[numLineVerts++] = { pos1, triColour };
+                    g_WireframeVerts[numLineVerts++] = { pos2, triColour };
+                    g_WireframeVerts[numLineVerts++] = { pos2, triColour };
+                    g_WireframeVerts[numLineVerts++] = { pos0, triColour };
                 }
             }
 
@@ -1267,11 +1357,147 @@ int main(int, char**)
 
                 g_pd3dDeviceContext->IASetVertexBuffers(0, 1, buffers, stride, offset);
 
-                // An unindexED line list.
+                // An unindexed line list.
                 g_pd3dDeviceContext->IASetIndexBuffer(nullptr, DXGI_FORMAT_R32_UINT, 0);
                 g_pd3dDeviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
 
                 g_pd3dDeviceContext->Draw(numLineVerts, 0);
+
+                if ( g_WireframeShowUniqueMapping )
+                {
+                    // Grody little hack to put an isometric view in.
+                    // The camera matrix will be reset next frame.
+                    float scaleX = g_WireframeScale;
+                    float scaleY = -g_WireframeScale * (float)g_CurrentWidth / (float)g_CurrentHeight;
+                    Mat44 projectionFromCameraMatrix = Mat44::identity;
+                    projectionFromCameraMatrix.x.x = scaleX;
+                    projectionFromCameraMatrix.x.w = g_WireframeXOffset - 0.5 * scaleX;
+                    projectionFromCameraMatrix.y.y = scaleY;
+                    projectionFromCameraMatrix.y.w = g_WireframeYOffset - 0.5 * scaleY;
+                    projectionFromCameraMatrix.z.z = 0.0f;
+                    projectionFromCameraMatrix.w.z = 0.5f;
+                    projectionFromCameraMatrix.w.w = 1.0f;
+                    g_ConstantBufferData.cameraFromObjectMatrix = Mat44::identity;
+                    g_ConstantBufferData.projectionFromCameraMatrix = projectionFromCameraMatrix;
+
+                    g_pd3dDeviceContext->Map(g_ConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedSubRes);
+                    CopyMemory(mappedSubRes.pData, &g_ConstantBufferData, sizeof(g_ConstantBufferData));
+                    g_pd3dDeviceContext->Unmap(g_ConstantBuffer, 0);
+
+                    numLineVerts = 0;
+                    curIndex = g_IndexData;
+                    for ( int triNum = 0; triNum < g_NumTris; triNum++ )
+                    {
+                        int index0 = *curIndex++;
+                        int index1 = *curIndex++;
+                        int index2 = *curIndex++;
+
+                        VertexBufferStruct *v0 = g_VertexDataTemp + index0;
+                        VertexBufferStruct *v1 = g_VertexDataTemp + index1;
+                        VertexBufferStruct *v2 = g_VertexDataTemp + index2;
+
+                        Vec3 pos0 = Vec3 ( v0->TexCoord.x, v0->TexCoord.y, 0.0f );
+                        Vec3 pos1 = Vec3 ( v1->TexCoord.x, v1->TexCoord.y, 0.0f );
+                        Vec3 pos2 = Vec3 ( v2->TexCoord.x, v2->TexCoord.y, 0.0f );
+
+                        g_WireframeVerts[numLineVerts++] = { pos0, colourSolid };
+                        g_WireframeVerts[numLineVerts++] = { pos1, colourSolid };
+                        g_WireframeVerts[numLineVerts++] = { pos1, colourSolid };
+                        g_WireframeVerts[numLineVerts++] = { pos2, colourSolid };
+                        g_WireframeVerts[numLineVerts++] = { pos2, colourSolid };
+                        g_WireframeVerts[numLineVerts++] = { pos0, colourSolid };
+                    }
+
+                    for ( int edgeNum = 0; edgeNum < g_EdgeListCount; edgeNum++ )
+                    {
+                        // Need to draw both edges in the unique view, since they are noy coincident.
+                        int index0 = g_EdgeList[edgeNum].v1;
+                        int index1 = g_EdgeList[edgeNum].v2;
+                        int index0P = g_EdgeList[edgeNum].v1Prox;
+                        int index1P = g_EdgeList[edgeNum].v2Prox;
+
+                        VertexBufferStruct *v0 = g_VertexDataTemp + index0;
+                        VertexBufferStruct *v1 = g_VertexDataTemp + index1;
+                        VertexBufferStruct *v0P = g_VertexDataTemp + index0P;
+                        VertexBufferStruct *v1P = g_VertexDataTemp + index1P;
+
+                        Vec3 pos0 = Vec3 ( v0->TexCoord.x, v0->TexCoord.y, 0.0f );
+                        Vec3 pos1 = Vec3 ( v1->TexCoord.x, v1->TexCoord.y, 0.0f );
+                        Vec3 pos0P = Vec3 ( v0P->TexCoord.x, v0P->TexCoord.y, 0.0f );
+                        Vec3 pos1P = Vec3 ( v1P->TexCoord.x, v1P->TexCoord.y, 0.0f );
+
+                        g_WireframeVerts[numLineVerts++] = { pos0, colourEdge };
+                        g_WireframeVerts[numLineVerts++] = { pos1, colourEdge };
+                        g_WireframeVerts[numLineVerts++] = { pos0P, colourEdge };
+                        g_WireframeVerts[numLineVerts++] = { pos1P, colourEdge };
+                    }
+
+                    for ( int triNum = 0; triNum < 2; triNum++ )
+                    {
+                        if ( g_WireframeDebugTriangle[triNum] >= 0 )
+                        {
+                            if ( g_WireframeDebugTriangle[triNum] >= g_NumTris )
+                            {
+                                g_WireframeDebugTriangle[triNum] = g_NumTris - 1;
+                            }
+
+                            Vec4 triColour = colourCyan;
+                            if ( triNum == 1 )
+                            {
+                                triColour = colourYellow;
+                            }
+
+                            int curTriNum = g_WireframeDebugTriangle[triNum];
+
+                            curIndex = g_IndexData + curTriNum * 3;
+
+                            int index0 = *curIndex++;
+                            int index1 = *curIndex++;
+                            int index2 = *curIndex++;
+
+                            VertexBufferStruct *v0 = g_VertexDataTemp + index0;
+                            VertexBufferStruct *v1 = g_VertexDataTemp + index1;
+                            VertexBufferStruct *v2 = g_VertexDataTemp + index2;
+
+                            Vec3 pos0 = Vec3 ( v0->TexCoord.x, v0->TexCoord.y, 0.0f );
+                            Vec3 pos1 = Vec3 ( v1->TexCoord.x, v1->TexCoord.y, 0.0f );
+                            Vec3 pos2 = Vec3 ( v2->TexCoord.x, v2->TexCoord.y, 0.0f );
+
+                            static float animAmount = 0.0f;
+                            animAmount += secondsSinceLastFrame * 0.5f;
+                            animAmount -= floorf ( animAmount );
+                            float animBlend = animAmount * 2.0f;
+                            if ( animBlend > 1.0f )
+                            {
+                                animBlend = 2.0f - animBlend;
+                            }
+                            Vec3 center = ( pos0 + pos1 + pos2 ) * ( 1.0f / 3.0f );
+                            float lerp = 1.0f - 0.2f * animBlend;
+
+                            pos0 = pos0 * lerp + center * ( 1.0f - lerp );
+                            pos1 = pos1 * lerp + center * ( 1.0f - lerp );
+                            pos2 = pos2 * lerp + center * ( 1.0f - lerp );
+
+                            g_WireframeVerts[numLineVerts++] = { pos0, triColour };
+                            g_WireframeVerts[numLineVerts++] = { pos1, triColour };
+                            g_WireframeVerts[numLineVerts++] = { pos1, triColour };
+                            g_WireframeVerts[numLineVerts++] = { pos2, triColour };
+                            g_WireframeVerts[numLineVerts++] = { pos2, triColour };
+                            g_WireframeVerts[numLineVerts++] = { pos0, triColour };
+                        }
+                    }
+
+                    ASSERT ( g_VertexBufferWireframeSize >= numLineVerts );
+                    g_pd3dDeviceContext->Map(g_VertexBufferWireframe, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedSubRes);
+                    CopyMemory(mappedSubRes.pData, &g_WireframeVerts, sizeof(g_WireframeVerts[0]) * numLineVerts);
+                    g_pd3dDeviceContext->Unmap(g_VertexBufferWireframe, 0);
+
+                    g_pd3dDeviceContext->OMSetDepthStencilState(g_DepthStencilStateOff, 0);
+
+                    g_pd3dDeviceContext->Draw(numLineVerts, 0);
+
+                    ASSERT ( g_VertexBufferWireframeSize >= numLineVerts );
+                }
             }
         }
 
@@ -1407,7 +1633,7 @@ bool CreateDeviceD3D(HWND hWnd)
     D3D11_DEPTH_STENCIL_DESC depthStencilDesc = CD3D11_DEPTH_STENCIL_DESC();
     depthStencilDesc.DepthEnable = true;
     depthStencilDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
-    depthStencilDesc.DepthFunc = D3D11_COMPARISON_GREATER; // we are using reverse Z!
+    depthStencilDesc.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL; // we are using reverse Z!
     depthStencilDesc.StencilEnable = false;
     g_pd3dDevice->CreateDepthStencilState(&depthStencilDesc, &g_DepthStencilState);
 
@@ -2986,6 +3212,15 @@ void CreateTeleportEdgefill()
     // 
     // Now find triangle edges that do not have matching opposite edges in another triangle.
     // i.e. they may be one half of a seam, or they may just be a long edge.
+
+    // The only reason to store these edges is for the wireframe debug view.
+    if ( g_EdgeList != nullptr )
+    {
+        delete g_EdgeList;
+    }
+    g_EdgeList = new EdgeStruct[g_NumTris * 3];
+    g_EdgeListCount = 0;
+
     for ( int triNum = 0; triNum < g_NumTris; triNum++ )
     {
         UINT v1 = g_IndexData[triNum * 3 + 2];
@@ -3082,6 +3317,14 @@ void CreateTeleportEdgefill()
             // next to each other won't make the lerp do anything sensible.
             // That's why the UVs need to be teleported, and then re-sampled in
             // the new location.
+
+            // The only reason to store these edges is for the wireframe debug view.
+            EdgeStruct newEdge;
+            newEdge.v1 = v1;
+            newEdge.v2 = v2;
+            newEdge.v1Prox = v1Prox;
+            newEdge.v2Prox = v2Prox;
+            g_EdgeList[g_EdgeListCount++] = newEdge;
 
             for ( int direction = 0; direction < 2; direction++ )
             {

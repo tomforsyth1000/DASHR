@@ -1,12 +1,11 @@
 # DASHR
 DASHR - Dynamically Animated Skinned Heightfield Rendering
 
-Tom Forsyth, v1.0 2026 September 27th
+Tom Forsyth, v1.1 2026 October 12th
 
-Short video: <https://youtu.be/-Su9YrcazRk>
+Short "pitch" video: <https://youtu.be/-Su9YrcazRk>
 
-Longer video soon - details in the paper.
-
+Longer technical video: <https://youtu.be/SA2cXydaq1A>
 
 Online paper: <https://tomforsyth1000.github.io/DASHR/paper/DASHR_Paper.html>
 
